@@ -230,11 +230,12 @@ class SyntheticCollector(BaseCollector):
             else:
                 # HEALTHY: full 8-GPU training job
                 job = f"llm-train-{ni:02d}"
+                pod = f"trainer-{ni:02d}"
                 for i in range(self.gpus_per_node):
                     gpus.append(self._gpu(
                         i, util_sm=91, util_mem=79, mem_frac=0.80,
                         power_frac=0.90, temp=75.0,
-                        pod_name=f"trainer-{ni:02d}-gpu{i}", namespace="ml-team",
+                        pod_name=pod, namespace="ml-team",
                         job_name=job,
                     ))
             nodes.append(self._node(f"gpu-node-{ni:02d}", gpus,
