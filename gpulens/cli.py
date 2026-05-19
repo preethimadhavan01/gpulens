@@ -117,7 +117,16 @@ def simulate(
 @click.option("--prometheus-url", "-p", required=True,
               help="Prometheus endpoint (e.g. http://prometheus.monitoring.svc:9090).")
 @click.option("--cluster-name", "-c", default="production", show_default=True,
-              help="Cluster label for the report.")
+              help="Cluster label for the report (and filter value when "
+                   "--cluster-label is set).")
+@click.option("--cluster-label", default=None,
+              help="Prometheus label distinguishing clusters in a federated / "
+                   "Thanos / Cortex setup (typically 'cluster'). When set, all "
+                   "queries are scoped to this cluster. Required to avoid "
+                   "cross-cluster data bleed in multi-cluster Prometheus.")
+@click.option("--namespace", default=None,
+              help="Restrict pod attribution to a single Kubernetes namespace "
+                   "(multi-tenant clusters).")
 @click.option(
     "--output", "-o",
     type=click.Choice(["cli", "json"]),
@@ -132,6 +141,8 @@ def simulate(
 def scan(
     prometheus_url: str,
     cluster_name: str,
+    cluster_label: str | None,
+    namespace: str | None,
     output: str,
     verbose: bool,
     no_heatmap: bool,
@@ -165,6 +176,8 @@ def scan(
     collector = PrometheusCollector(
         prometheus_url = prometheus_url,
         cluster_name   = cluster_name,
+        cluster_label  = cluster_label,
+        namespace      = namespace,
         tls_verify     = not no_tls_verify,
         bearer_token   = token,
     )

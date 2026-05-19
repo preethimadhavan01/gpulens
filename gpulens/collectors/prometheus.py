@@ -84,12 +84,30 @@ class PrometheusCollector(BaseCollector):
         self,
         prometheus_url: str,
         cluster_name: str = "production",
+        cluster_label: Optional[str] = None,
+        namespace: Optional[str] = None,
         timeout_seconds: int = 15,
         tls_verify: bool = True,
         bearer_token: Optional[str] = None,
     ) -> None:
+        """
+        Parameters
+        ----------
+        cluster_label : Optional[str]
+            Prometheus label that distinguishes clusters in a federated /
+            Thanos / Cortex setup (typically "cluster"). When set, every
+            query is filtered to {<cluster_label>="<cluster_name>"} so that
+            metrics from other clusters don't bleed into this collection.
+            Leave as None for single-cluster Prometheus deployments.
+        namespace : Optional[str]
+            Restrict pod attribution to a single Kubernetes namespace
+            (multi-tenant clusters). DCGM-level GPU metrics still come
+            through, but only pods in this namespace are mapped onto GPUs.
+        """
         self.prometheus_url = prometheus_url.rstrip("/")
         self.cluster_name   = cluster_name
+        self.cluster_label  = cluster_label
+        self.namespace      = namespace
         self.timeout        = timeout_seconds
 
         self._session = requests.Session()
@@ -105,6 +123,22 @@ class PrometheusCollector(BaseCollector):
             return False
 
     # ── Prometheus query helpers ────────────────────────────────────────────
+
+    def _metric(
+        self,
+        name: str,
+        extra: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """
+        Render a metric selector `name{...}` with cluster + tenant filters
+        applied. `extra` is additional exact-match selectors to AND in.
+        """
+        parts: List[str] = []
+        if self.cluster_label:
+            parts.append(f'{self.cluster_label}="{self.cluster_name}"')
+        if extra:
+            parts.extend(f'{k}="{v}"' for k, v in extra.items())
+        return f"{name}{{{','.join(parts)}}}" if parts else name
 
     def _query(self, promql: str) -> List[Dict[str, Any]]:
         resp = self._session.get(
@@ -141,19 +175,22 @@ class PrometheusCollector(BaseCollector):
 
     def collect(self) -> ClusterSnapshot:
         # ── DCGM metrics ───────────────────────────────────────────────────
-        sm_util  = self._scalar_map("DCGM_FI_DEV_GPU_UTIL")
-        mem_util = self._scalar_map("DCGM_FI_DEV_MEM_COPY_UTIL")
-        fb_used  = self._scalar_map("DCGM_FI_DEV_FB_USED")
-        fb_free  = self._scalar_map("DCGM_FI_DEV_FB_FREE")
-        sm_clock = self._scalar_map("DCGM_FI_DEV_SM_CLOCK")
-        mem_clk  = self._scalar_map("DCGM_FI_DEV_MEM_CLOCK")
-        power    = self._scalar_map("DCGM_FI_DEV_POWER_USAGE")
-        temp     = self._scalar_map("DCGM_FI_DEV_GPU_TEMP")
+        sm_util  = self._scalar_map(self._metric("DCGM_FI_DEV_GPU_UTIL"))
+        mem_util = self._scalar_map(self._metric("DCGM_FI_DEV_MEM_COPY_UTIL"))
+        fb_used  = self._scalar_map(self._metric("DCGM_FI_DEV_FB_USED"))
+        fb_free  = self._scalar_map(self._metric("DCGM_FI_DEV_FB_FREE"))
+        sm_clock = self._scalar_map(self._metric("DCGM_FI_DEV_SM_CLOCK"))
+        mem_clk  = self._scalar_map(self._metric("DCGM_FI_DEV_MEM_CLOCK"))
+        power    = self._scalar_map(self._metric("DCGM_FI_DEV_POWER_USAGE"))
+        temp     = self._scalar_map(self._metric("DCGM_FI_DEV_GPU_TEMP"))
 
         # ── Pod attribution (kube-state-metrics) ───────────────────────────
         # kube_pod_container_resource_requests has node, namespace, pod labels
+        pod_filters: Dict[str, str] = {"resource": "nvidia.com/gpu"}
+        if self.namespace:
+            pod_filters["namespace"] = self.namespace
         pod_allocs = self._query(
-            'kube_pod_container_resource_requests{resource="nvidia.com/gpu"} > 0'
+            self._metric("kube_pod_container_resource_requests", pod_filters) + " > 0"
         )
         # node → list of pod dicts
         node_pods: Dict[str, List[Dict]] = {}
@@ -171,7 +208,7 @@ class PrometheusCollector(BaseCollector):
         # and kube-state-metrics use the K8s node name. Bridge the gap via
         # kube_node_info, which carries both `node` and `internal_ip`.
         ip_to_node: Dict[str, str] = {}
-        for item in self._query("kube_node_info"):
+        for item in self._query(self._metric("kube_node_info")):
             m = item["metric"]
             node = m.get("node")
             ip   = m.get("internal_ip")
@@ -180,8 +217,9 @@ class PrometheusCollector(BaseCollector):
 
         # rate over 2m window — fallback to 0 if not available
         cpu_idle_map: Dict[str, float] = {}
+        cpu_metric = self._metric("node_cpu_seconds_total", {"mode": "idle"})
         for item in self._query(
-            'avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m]))'
+            f"avg by (instance) (rate({cpu_metric}[2m]))"
         ):
             instance = item["metric"].get("instance", "")
             host = instance.split(":")[0]
