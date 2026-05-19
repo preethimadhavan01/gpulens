@@ -167,12 +167,25 @@ class PrometheusCollector(BaseCollector):
             })
 
         # ── Host CPU (node_exporter) ────────────────────────────────────────
+        # node_exporter labels series with instance=<pod_ip>:9100, while DCGM
+        # and kube-state-metrics use the K8s node name. Bridge the gap via
+        # kube_node_info, which carries both `node` and `internal_ip`.
+        ip_to_node: Dict[str, str] = {}
+        for item in self._query("kube_node_info"):
+            m = item["metric"]
+            node = m.get("node")
+            ip   = m.get("internal_ip")
+            if node and ip:
+                ip_to_node[ip] = node
+
         # rate over 2m window — fallback to 0 if not available
         cpu_idle_map: Dict[str, float] = {}
         for item in self._query(
             'avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[2m]))'
         ):
-            node = _get_node_name(item["metric"])
+            instance = item["metric"].get("instance", "")
+            host = instance.split(":")[0]
+            node = ip_to_node.get(host, host)
             try:
                 cpu_idle_map[node] = float(item["value"][1])
             except (IndexError, ValueError):
