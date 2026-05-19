@@ -191,11 +191,12 @@ class SyntheticCollector(BaseCollector):
         nodes = []
         for ni in range(self.node_count):
             job = f"llm-training-{ni // 2:02d}"
+            pod = f"trainer-{ni:02d}"
             gpus = [
                 self._gpu(
                     i, util_sm=random.uniform(88, 96), util_mem=random.uniform(72, 85),
                     mem_frac=0.78, power_frac=0.88, temp=random.uniform(72, 78),
-                    pod_name=f"trainer-{ni:02d}-gpu{i}", namespace="ml-team",
+                    pod_name=pod, namespace="ml-team",
                     job_name=job,
                 )
                 for i in range(self.gpus_per_node)
@@ -252,13 +253,14 @@ class SyntheticCollector(BaseCollector):
         nodes = []
         for ni in range(self.node_count):
             job = "resnet-train-bottlenecked"
+            pod = f"trainer-{ni:02d}"
             gpus = [
                 self._gpu(
                     i,
                     util_sm=random.uniform(22, 48),   # spiky average — high variance
                     util_mem=random.uniform(28, 52),
                     mem_frac=0.58, power_frac=0.42, temp=61.0,
-                    pod_name=f"trainer-{ni:02d}-gpu{i}", namespace="ml-team",
+                    pod_name=pod, namespace="ml-team",
                     job_name=job,
                 )
                 for i in range(self.gpus_per_node)
@@ -285,13 +287,14 @@ class SyntheticCollector(BaseCollector):
             is_straggler = (ni == straggler_node)
             gpu_util = random.uniform(12, 22) if is_straggler else random.uniform(72, 85)
             ib_bw    = random.uniform(0.8, 2.5) if is_straggler else random.uniform(148, 190)
+            pod = f"trainer-{ni:02d}"
 
             gpus = [
                 self._gpu(
                     i, util_sm=gpu_util, util_mem=gpu_util * 0.85,
                     mem_frac=0.72, power_frac=0.28 if is_straggler else 0.82,
                     temp=52.0 if is_straggler else random.uniform(71, 78),
-                    pod_name=f"trainer-{ni:02d}-gpu{i}", namespace="ml-team",
+                    pod_name=pod, namespace="ml-team",
                     job_name=job,
                 )
                 for i in range(self.gpus_per_node)
@@ -362,6 +365,7 @@ class SyntheticCollector(BaseCollector):
         nodes = []
         for ni in range(self.node_count):
             job = f"large-model-train-{ni:02d}"
+            pod = f"trainer-{ni:02d}"
             gpus = [
                 self._gpu(
                     i,
@@ -369,7 +373,7 @@ class SyntheticCollector(BaseCollector):
                     util_mem=random.uniform(88, 98),
                     mem_frac=random.uniform(0.92, 0.99),
                     power_frac=0.65, temp=random.uniform(78, 85),
-                    pod_name=f"trainer-{ni:02d}-gpu{i}", namespace="ml-team",
+                    pod_name=pod, namespace="ml-team",
                     job_name=job,
                 )
                 for i in range(self.gpus_per_node)
@@ -425,10 +429,11 @@ class SyntheticCollector(BaseCollector):
                                          ib_rx_gbps=3, ib_tx_gbps=3))
 
             elif kind == "cpu_starved":
+                pod = f"trainer-{ni:02d}"
                 gpus = [
                     self._gpu(i, util_sm=random.uniform(20, 44), util_mem=random.uniform(24, 46),
                               mem_frac=0.57, power_frac=0.40, temp=60.0,
-                              pod_name=f"trainer-{ni:02d}-gpu{i}", namespace="ml-team",
+                              pod_name=pod, namespace="ml-team",
                               job_name=job)
                     for i in range(self.gpus_per_node)
                 ]
@@ -436,25 +441,23 @@ class SyntheticCollector(BaseCollector):
                                          ib_rx_gbps=14, ib_tx_gbps=14))
 
             elif kind == "straggler":
+                pod = f"trainer-{ni:02d}"
                 gpus = [
                     self._gpu(i, util_sm=random.uniform(11, 21), util_mem=random.uniform(9, 17),
                               mem_frac=0.70, power_frac=0.24, temp=53.0,
-                              pod_name=f"trainer-{ni:02d}-gpu{i}", namespace="ml-team",
+                              pod_name=pod, namespace="ml-team",
                               job_name=job)
                     for i in range(self.gpus_per_node)
                 ]
-                # 7 other nodes in this same job are running fine (healthy)
-                for ni2 in range(8):
-                    if ni2 != ni and ni2 not in (0, 1, 2, 4, 5):
-                        pass  # covered by healthy nodes below
                 nodes.append(self._node(name, gpus, cpu_util=20,
                                          ib_rx_gbps=1.1, ib_tx_gbps=1.1))
 
             elif kind == "mem_press":
+                pod = f"trainer-{ni:02d}"
                 gpus = [
                     self._gpu(i, util_sm=random.uniform(36, 56), util_mem=random.uniform(89, 98),
                               mem_frac=random.uniform(0.92, 0.98), power_frac=0.63, temp=82.0,
-                              pod_name=f"trainer-{ni:02d}-gpu{i}", namespace="ml-team",
+                              pod_name=pod, namespace="ml-team",
                               job_name=job)
                     for i in range(self.gpus_per_node)
                 ]
@@ -462,10 +465,11 @@ class SyntheticCollector(BaseCollector):
                                          ib_rx_gbps=110, ib_tx_gbps=110))
 
             else:  # healthy
+                pod = f"trainer-{ni:02d}"
                 gpus = [
                     self._gpu(i, util_sm=random.uniform(88, 95), util_mem=random.uniform(73, 85),
                               mem_frac=0.78, power_frac=0.88, temp=74.0,
-                              pod_name=f"trainer-{ni:02d}-gpu{i}", namespace="ml-team",
+                              pod_name=pod, namespace="ml-team",
                               job_name=job)
                     for i in range(self.gpus_per_node)
                 ]
