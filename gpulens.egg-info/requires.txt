@@ -1,0 +1,9 @@
+click>=8.1
+rich>=13.0
+requests>=2.31
+
+[dev]
+pytest>=7
+pytest-cov
+ruff
+mypy
