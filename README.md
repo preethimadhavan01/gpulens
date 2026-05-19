@@ -199,6 +199,10 @@ pytest tests/ -v
 
 ---
 
+## Demo 
+![gpulens mixed scenario output](assets/demo.png)
+
+
 ## Roadmap
 
 - [ ] `--watch` mode with configurable polling interval
