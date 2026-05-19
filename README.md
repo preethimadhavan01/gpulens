@@ -1,0 +1,216 @@
+# gpulens ⚡
+
+**GPU workload analyzer for AI infrastructure teams on Kubernetes.**
+
+Standard tooling (Grafana + DCGM, Lens, `kubectl top`) tells you *what* your GPUs are doing. `gpulens` tells you *why* they're underperforming — and exactly what to do about it.
+
+---
+
+## The Problem
+
+A GPU at 30% utilization during training could mean any of:
+
+| Signal | Root Cause | Fix |
+|--------|-----------|-----|
+| GPU 30% util, CPU 97% | Data pipeline starvation | Add DataLoader workers, use DALI |
+| GPU 15% util, IB 1 GB/s vs 175 GB/s median | NCCL straggler blocking collective | Check `ibstat`, restart ring |
+| GPU 8% util, pod Running | Cold start / weight download | Wait, or flag as expected |
+| GPU 6% util, 2/8 GPUs allocated | Fragmentation — node underutilized | Bin-pack, enable consolidation |
+
+These produce identical raw metrics in Prometheus. `gpulens` disambiguates them.
+
+---
+
+## Quickstart
+
+```bash
+pip install gpulens
+
+# Offline demo — no cluster needed
+gpulens simulate --scenario mixed
+
+# All scenarios
+gpulens scenarios
+
+# Single-problem scenarios
+gpulens simulate --scenario nccl_straggler
+gpulens simulate --scenario cpu_starvation --verbose
+
+# JSON output for downstream processing
+gpulens simulate --scenario mixed -o json | jq '.problems[] | select(.severity=="CRITICAL")'
+
+# Live cluster (requires Prometheus + DCGM Exporter)
+gpulens scan --prometheus-url http://prometheus.monitoring.svc:9090
+```
+
+---
+
+## Python API
+
+```python
+from gpulens import SyntheticCollector, Scenario, Analyzer
+from gpulens.reporters.cli_reporter import CLIReporter
+
+# Collect a snapshot (synthetic or live)
+snapshot = SyntheticCollector(scenario=Scenario.MIXED).collect()
+
+# Analyze
+report = Analyzer().analyze(snapshot)
+
+# Consume as Python objects
+for problem in report.problems:
+    print(f"[{problem.severity}] {problem.type} on {problem.node_name}")
+    print(f"  → {problem.recommendation}")
+
+# Or render to terminal
+CLIReporter().print_report(report)
+
+# Or export to JSON
+print(report.to_json())
+```
+
+### Custom analyzer thresholds
+
+```python
+from gpulens.analyzers import Analyzer
+
+analyzer = Analyzer(
+    idle_gpu_util_threshold   = 5.0,   # flag GPU idle if < 5% SM util
+    cpu_starvation_threshold  = 85.0,  # flag CPU starvation at 85%
+    memory_pressure_threshold = 88.0,  # flag memory pressure at 88%
+    straggler_ratio_threshold = 0.6,   # flag straggler at < 60% of job median
+    thermal_threshold_c       = 80.0,  # flag thermal risk at 80°C
+)
+```
+
+### Live Prometheus collector
+
+```python
+from gpulens import PrometheusCollector, Analyzer
+from gpulens.reporters.cli_reporter import CLIReporter
+
+collector = PrometheusCollector(
+    prometheus_url = "http://prometheus.monitoring.svc:9090",
+    cluster_name   = "prod-us-east",
+    bearer_token   = os.environ["PROM_TOKEN"],  # optional
+)
+
+if collector.is_available():
+    snapshot = collector.collect()
+    report   = Analyzer().analyze(snapshot)
+    CLIReporter(verbose=True).print_report(report)
+```
+
+---
+
+## Problems Detected
+
+| Problem Type | Severity | Signal Used |
+|---|---|---|
+| `NCCL_STRAGGLER` | 🔴 CRITICAL | Per-job GPU util median deviation + IB bandwidth |
+| `MEMORY_PRESSURE` | 🔴 CRITICAL / 🟠 HIGH | GPU framebuffer > 90% |
+| `CPU_DATA_STARVATION` | 🟠 HIGH | GPU util 10-60% + CPU > 90% |
+| `GPU_IDLE_ALLOCATED` | 🟠 HIGH / 🟡 MEDIUM | Allocated GPU < 10% SM util |
+| `GPU_FRAGMENTATION` | 🟠 HIGH / 🟡 MEDIUM | Node < 50% GPU allocation ratio |
+| `THERMAL_THROTTLING` | 🟡 MEDIUM | GPU temperature > 83°C |
+| `TOPOLOGY_MISMATCH` | 🟠 HIGH | Multi-GPU job crossing NVLink domains |
+
+Each problem includes: what is happening (with observed values), business impact (with cost estimate), and concrete remediation steps.
+
+---
+
+## Synthetic Scenarios
+
+| Scenario | Problems Embedded | Use For |
+|---|---|---|
+| `healthy` | None | Validate no false positives |
+| `fragmentation` | GPU_FRAGMENTATION on 50% of nodes | Bin-packing analysis |
+| `cpu_starvation` | CPU_DATA_STARVATION cluster-wide | DataLoader tuning |
+| `nccl_straggler` | NCCL_STRAGGLER on node-03 | Network fault detection |
+| `cold_start` | GPU_IDLE_ALLOCATED on nodes 0-3 | Startup latency analysis |
+| `memory_pressure` | MEMORY_PRESSURE cluster-wide | OOM prevention |
+| `mixed` | All problem types across 8 nodes | Full demo / integration testing |
+
+---
+
+## Live Cluster Prerequisites
+
+```bash
+# DCGM Exporter (NVIDIA GPU metrics → Prometheus)
+helm repo add gpu-helm-charts https://nvidia.github.io/dcgm-exporter/helm-charts
+helm install dcgm gpu-helm-charts/dcgm-exporter -n monitoring \
+  --set serviceMonitor.enabled=true
+
+# kube-state-metrics (pod → GPU attribution)
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm install ksm prometheus-community/kube-state-metrics -n monitoring
+
+# node_exporter (host CPU metrics)
+helm install node-exporter prometheus-community/prometheus-node-exporter -n monitoring
+```
+
+Verify DCGM metrics are present:
+```bash
+curl -s http://prometheus.monitoring.svc:9090/api/v1/query \
+  --data-urlencode 'query=DCGM_FI_DEV_GPU_UTIL' | jq '.data.result | length'
+```
+
+---
+
+## Architecture
+
+```
+gpulens/
+├── collectors/
+│   ├── base.py          BaseCollector ABC
+│   ├── prometheus.py    Live DCGM + kube-state-metrics collector
+│   └── synthetic.py     7 deterministic offline scenarios
+├── analyzers/
+│   ├── __init__.py      Analyzer orchestrator
+│   ├── utilization.py   GPU_IDLE_ALLOCATED, CPU_DATA_STARVATION,
+│   │                    MEMORY_PRESSURE, THERMAL_THROTTLING
+│   ├── fragmentation.py GPU_FRAGMENTATION
+│   ├── topology.py      TOPOLOGY_MISMATCH (NVLink domain crossing)
+│   └── collective.py    NCCL_STRAGGLER (per-job median deviation)
+├── models/
+│   ├── cluster.py       ClusterSnapshot, NodeSnapshot, GPUMetrics, GPUType
+│   └── problems.py      Problem, ProblemSeverity, ProblemType, AnalysisReport
+└── reporters/
+    └── cli_reporter.py  Rich terminal output with heatmap
+```
+
+---
+
+## Development
+
+```bash
+git clone https://github.com/your-org/gpulens
+cd gpulens
+pip install -e ".[dev]"
+
+# Run all scenarios
+for s in healthy fragmentation cpu_starvation nccl_straggler cold_start memory_pressure mixed; do
+  echo "=== $s ===" && gpulens simulate --scenario $s -o json | jq '.problem_count'
+done
+
+# Tests
+pytest tests/ -v
+```
+
+---
+
+## Roadmap
+
+- [ ] `--watch` mode with configurable polling interval
+- [ ] Prometheus AlertManager integration (post problems as alerts)
+- [ ] MIG (Multi-Instance GPU) slice utilization analysis
+- [ ] Historical trend analysis (compare snapshots over time)
+- [ ] `COLD_START_LATENCY` analyzer (using pod event timestamps)
+- [ ] Slack / PagerDuty webhook output format
+- [ ] OpenTelemetry trace export
+
+---
+
+## License
+
+Apache 2.0
